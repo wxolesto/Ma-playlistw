@@ -1,0 +1,91 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Get the site files
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Create the Android project
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/app"
+          mkdir -p "$APP/www"
+          cp index.html icon-512.png "$APP/www/"
+          cp ArsenousAudioPlugin.java PlaybackService.java MainActivity.java "$APP/"
+          cd "$APP"
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/app@6
+          npx cap telemetry off || true
+          npx cap init "Arsenous base" com.arsenous.base --web-dir www
+          npx cap add android
+          python3 - <<'PY'
+          import re,json,os,shutil
+          p='android/app/src/main/AndroidManifest.xml'
+          m=open(p).read()
+          perms=''.join('<uses-permission android:name="%s"/>\n    '%x for x in ['android.permission.READ_MEDIA_AUDIO','android.permission.POST_NOTIFICATIONS','android.permission.FOREGROUND_SERVICE','android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK','android.permission.WAKE_LOCK'])
+          perms+='<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n    '
+          m=m.replace('<application',perms+'<application',1)
+          m=m.replace('</application>','<service android:name="com.arsenous.base.PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>\n    </application>',1)
+          open(p,'w').write(m)
+          d='android/app/src/main/java/com/arsenous/base'
+          os.makedirs(d,exist_ok=True)
+          for f in ['ArsenousAudioPlugin.java','PlaybackService.java','MainActivity.java']:
+              shutil.copy(f,d+'/'+f)
+          c=json.load(open('capacitor.config.json'));c['backgroundColor']='#10141c';json.dump(c,open('capacitor.config.json','w'),indent=2)
+          PY
+          npx cap sync android
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Set the app icon
+        run: |
+          set -e
+          cd "$APP"
+          RES=android/app/src/main/res
+          rm -rf "$RES/mipmap-anydpi-v26"
+          for pair in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            d="${pair%%:*}"; s="${pair##*:}"
+            for n in ic_launcher ic_launcher_round ic_launcher_foreground; do
+              convert www/icon-512.png -resize "${s}x${s}" "$RES/mipmap-$d/$n.png"
+            done
+          done
+
+      - name: Use a fixed signing key (so updates keep your data)
+        run: |
+          mkdir -p ~/.android
+          echo "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" | base64 -d > ~/.android/debug.keystore
+
+      - name: Build the APK
+        run: |
+          set -e
+          cd "$APP/android"
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/arsenous-base.apk"
+
+      - name: Publish the APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-$(date +%Y%m%d-%H%M)"
+          gh release create "$TAG" arsenous-base.apk --title "Arsenous base APK" --notes "Android APK build" --target "$GITHUB_SHA"
